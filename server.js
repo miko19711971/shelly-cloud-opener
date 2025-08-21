@@ -1,51 +1,34 @@
-import express from "express";
-import fetch from "node-fetch";
-
+const express = require('express');
+const fetch = require('node-fetch');
 const app = express();
+
 const PORT = process.env.PORT || 3000;
 
-// La tua API Key Shelly Cloud (inserita come variabile ambiente su Render)
-const API_KEY = process.env.SHELLY_API_KEY;
+// API KEY dal Cloud Shelly (mettila nelle variabili di ambiente su Render)
+const SHELLY_API_KEY = process.env.SHELLY_API_KEY;
 
-// Lista dispositivi (puoi aggiungere quanti ne vuoi)
-const DEVICES = {
-  "arenula-door": "DEVICE_ID_ARENULA",
-  "arenula-building": "DEVICE_ID_PORTONE",
-  "leonina-door": "DEVICE_ID_LEONINA"
-};
+// ID del device Shelly (anche questo meglio come variabile di ambiente)
+const DEVICE_ID = process.env.DEVICE_ID;
 
-// Endpoint per aprire una porta
-app.get("/open/:door", async (req, res) => {
-  const door = req.params.door;
-  const deviceId = DEVICES[door];
-
-  if (!deviceId) {
-    return res.status(404).send("❌ Dispositivo non trovato");
-  }
-
+app.get('/open', async (req, res) => {
   try {
-    // Accendi (apri)
-    await fetch(`https://shelly-25-eu.shelly.cloud/device/relay/control`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: `auth_key=${API_KEY}&id=${deviceId}&turn=on`
+    const url = `https://shelly-33-eu.shelly.cloud/device/relay/control` +
+                `?auth_key=${SHELLY_API_KEY}&id=${DEVICE_ID}&turn=on`;
+
+    const response = await fetch(url);
+    const data = await response.json();
+
+    res.json({
+      status: "OK",
+      result: data
     });
 
-    // Spegni dopo 1 secondo
-    setTimeout(async () => {
-      await fetch(`https://shelly-25-eu.shelly.cloud/device/relay/control`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: `auth_key=${API_KEY}&id=${deviceId}&turn=off`
-      });
-    }, 1000);
-
-    res.send(`✅ Porta ${door} aperta`);
-  } catch (e) {
-    res.status(500).send("Errore apertura porta");
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Errore nell'aprire lo Shelly" });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server avviato sulla porta ${PORT}`);
 });

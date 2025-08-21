@@ -1,8 +1,3 @@
-
-Michele <mikbondi@gmail.com>
-16:09 (0 minuti fa)
-a me
-
 {
   "name": "shelly-cloud-multi-opener",
   "version": "1.0.0",
@@ -16,4 +11,4 @@ a me
     "express": "^4.19.2",
     "node-fetch": "^3.3.2"
   }
-} 
+}

@@ -1,0 +1,1 @@
+# shelly-cloud-opener

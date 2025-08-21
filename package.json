@@ -1,13 +1,19 @@
+
+Michele <mikbondi@gmail.com>
+16:09 (0 minuti fa)
+a me
+
 {
-  "name": "shelly-cloud-opener",
+  "name": "shelly-cloud-multi-opener",
   "version": "1.0.0",
-  "description": "Server per aprire Shelly Cloud via token",
+  "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "node-fetch": "^2.6.1"
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2"
   }
-}
+} 

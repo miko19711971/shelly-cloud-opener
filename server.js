@@ -1,111 +1,158 @@
+// server.js
+// Shelly unified opener – multi-sito con token giornaliero
+// Funziona con Shelly Cloud per dispositivi Shelly 1 (SHSW-1)
+// Richiede ENV: SHELLY_API_KEY, SHELLY_BASE_URL, TOKEN_SECRET
+
 const express = require('express');
 const crypto = require('crypto');
-const fetch = require('node-fetch'); // v2 (CommonJS)
 
 const app = express();
+app.use(express.json());
 
-// ENV richieste
-const SHELLY_API_KEY = process.env.SHELLY_API_KEY;
-const SHELLY_BASE_URL = process.env.SHELLY_BASE_URL || 'https://shelly-api-eu.shelly.cloud';
-const TOKEN_SECRET   = process.env.TOKEN_SECRET   || 'change-me';
+const API_KEY = process.env.SHELLY_API_KEY || '';
+const BASE = (process.env.SHELLY_BASE_URL || '').replace(/\/+$/, ''); // es: https://shelly-api-eu.shelly.cloud
+const SECRET = process.env.TOKEN_SECRET || 'change-me';
 
-if (!SHELLY_API_KEY || !SHELLY_BASE_URL) {
-  console.error('Mancano variabili: SHELLY_API_KEY o SHELLY_BASE_URL');
-}
-
-// Mappa di tutti i tuoi dispositivi
+// --- Mappa “target” -> { name, id, channel, type }
 const TARGETS = {
-  'leonina-door':                { id: '3494547a9395', name: 'Leonina — Apartment Door' },
-  'leonina-building-door':       { id: '34945479fbbe', name: 'Leonina — Building Door' },
-  'scala-door':                  { id: '3494547a1075', name: 'Scala — Apartment Door' },
-  'scala-building-door':         { id: '3494547745ee', name: 'Scala — Building Door' },
-  'ottavia-door':                { id: '3494547a887d', name: 'Ottavia — Apartment Door' },
-  'ottavia-building-door':       { id: '3494547ab62b', name: 'Ottavia — Building Door' },
-  'viale-trastevere-door':       { id: '34945479fa35', name: 'Viale Trastevere — Apartment Door' },
-  'viale-trastevere-building-door': { id: '34945479fd73', name: 'Viale Trastevere — Building Door' },
-  'arenula-building-door':       { id: '3494547ab05e', name: 'Arenula — Building Door' },
+  // Leonina
+  'leonina-door':               { name: 'Leonina — Apartment Door',  id: '3494547a9395', channel: 0, type: 'SHSW-1' },
+  'leonina-building-door':      { name: 'Leonina — Building Door',   id: '34945479fbbe', channel: 0, type: 'SHSW-1' },
+
+  // Scala
+  'scala-door':                 { name: 'Scala — Apartment Door',    id: '3494547a1075', channel: 0, type: 'SHSW-1' },
+  'scala-building-door':        { name: 'Scala — Building Door',     id: '3494547745ee', channel: 0, type: 'SHSW-1' },
+
+  // Ottavia
+  'ottavia-door':               { name: 'Ottavia — Apartment Door',  id: '3494547a887d', channel: 0, type: 'SHSW-1' },
+  'ottavia-building-door':      { name: 'Ottavia — Building Door',   id: '3494547ab62b', channel: 0, type: 'SHSW-1' },
+
+  // Viale Trastevere
+  'viale-trastevere-door':      { name: 'Viale Trastevere — Apartment Door', id: '34945479fa35', channel: 0, type: 'SHSW-1' },
+  'viale-trastevere-building-door': { name: 'Viale Trastevere — Building Door', id: '34945479fd73', channel: 0, type: 'SHSW-1' },
+
+  // Arenula (solo portone)
+  'arenula-building-door':      { name: 'Arenula — Building Door',   id: '3494547ab05e', channel: 0, type: 'SHSW-1' },
 };
 
-// chiamata al Cloud per i Gen1 (relay)
-async function pulseRelay(deviceId, seconds = 1) {
-  const url = `${SHELLY_BASE_URL}/device/relay/control`;
-  // corpo x-www-form-urlencoded come richiesto dal cloud per Gen1
-  const body = new URLSearchParams({
+// --- utilità token (valido per il giorno corrente YYYY-MM-DD)
+const todayStr = () => new Date().toISOString().slice(0, 10);
+const sign = (target, date) =>
+  crypto.createHmac('sha256', SECRET).update(`${target}|${date}`).digest('base64url');
+
+const verifyToken = (target, date, sig) => {
+  if (!date || !sig) return false;
+  // valido SOLO per oggi
+  const expected = sign(target, todayStr());
+  return date === todayStr() && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+};
+
+// --- chiamata a Shelly Cloud per SHSW-1 (Shelly 1)
+async function openShelly1(deviceId, channel = 0) {
+  const url = `${BASE}/device/relay/control`;
+  const body = {
     id: deviceId,
-    auth_key: SHELLY_API_KEY,
-    channel: '0',
-    turn: 'on',
-    timer: String(seconds)
-  });
+    auth_key: API_KEY,
+    channel: channel,
+    turn: 'on',           // con “momentary/pulse” configurato nel device farà un impulso
+    // timer: 1           // opzionale: tieni ON per 1s anche senza “pulse” lato device
+  };
 
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
   });
 
   const data = await res.json().catch(() => ({}));
-  return { status: res.status, data };
+  if (!res.ok || data?.isok === false) {
+    return { ok: false, status: res.status, data };
+  }
+  return { ok: true, status: res.status, data };
 }
 
-// home di controllo
-app.get('/', (req, res) => {
-  const list = Object.keys(TARGETS).map(t =>
-    `• <b>${t}</b> — ${TARGETS[t].name} — <a href="/gen/${t}">gen token</a> — <a href="/test-open/${t}">test open</a>`
-  ).join('<br>');
-  res.send(`<h3>Shelly unified opener</h3><p>${Object.keys(TARGETS).length} targets configured.</p>${list}<p><a href="/health">/health</a></p>`);
-});
+// --- apertura generica di un target (per ora supportiamo SHSW-1)
+async function openTarget(targetKey) {
+  const t = TARGETS[targetKey];
+  if (!t) return { ok: false, error: 'unknown_target' };
 
-// health
-app.get('/health', (req, res) => {
-  res.json({ ok: true, hasApiKey: !!SHELLY_API_KEY, hasBase: !!SHELLY_BASE_URL, node: process.version });
-});
+  // Solo Shelly 1 (SHSW-1)
+  if ((t.type || '').toUpperCase() !== 'SHSW-1') {
+    return { ok: false, error: 'wrong_type', msg: 'Could not control this device type' };
+  }
 
-// genera link giornaliero con token (valido fino a 23:59:59 del giorno indicato)
-function makeSig(target, dateStr) {
-  return crypto.createHmac('sha256', TOKEN_SECRET).update(`${target}|${dateStr}`).digest('base64url');
+  try {
+    const r = await openShelly1(t.id, t.channel || 0);
+    if (!r.ok) return { ok: false, error: 'cloud_error', details: r };
+    return { ok: true, result: r.data };
+  } catch (e) {
+    return { ok: false, error: 'exception', msg: String(e) };
+  }
 }
+
+// --- HOME: elenco target + link rapidi
+app.get('/', (_req, res) => {
+  const rows = Object.entries(TARGETS).map(([key, t]) => {
+    const gen = `/gen/${encodeURIComponent(key)}`;
+    const testDirect = `/open?target=${encodeURIComponent(key)}`;
+    const testToken = `/open/${encodeURIComponent(key)}/${todayStr()}/${sign(key, todayStr())}`;
+    return `• <b>${key}</b> — ${t.name} &nbsp; <a href="${gen}">gen token</a> &nbsp; <a href="${testDirect}">test open</a> &nbsp; <a href="${testToken}">test open (token)</a>`;
+  }).join('<br/>');
+
+  res.type('html').send(
+    `<h2>Shelly unified opener</h2>
+     <p>${Object.keys(TARGETS).length} targets configured.</p>
+     <div>${rows}</div>
+     <p><a href="/health">/health</a></p>`
+  );
+});
+
+// --- HEALTH
+app.get('/health', (_req, res) => {
+  res.json({
+    ok: true,
+    hasApiKey: !!API_KEY,
+    hasBase: !!BASE,
+    node: process.version
+  });
+});
+
+// --- GENERA token per il giorno corrente
 app.get('/gen/:target', (req, res) => {
   const target = req.params.target;
-  if (!TARGETS[target]) return res.json({ ok: false, error: 'unknown_target' });
+  if (!TARGETS[target]) return res.status(404).json({ ok: false, error: 'unknown_target' });
 
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0,10); // YYYY-MM-DD (oggi)
-  const sig = makeSig(target, dateStr);
-  const url = `${req.protocol}://${req.get('host')}/open/${target}/${dateStr}/${sig}`;
-  res.json({ ok: true, target, date: dateStr, sig, url });
+  const date = todayStr();
+  const sig = sign(target, date);
+  const url = `${req.protocol}://${req.get('host')}/open/${encodeURIComponent(target)}/${date}/${sig}`;
+
+  res.json({ ok: true, target, date, sig, url });
 });
 
-// test diretto (senza token) — SOLO per debug
-app.get('/test-open/:target', async (req, res) => {
-  const target = req.params.target;
-  if (!TARGETS[target]) return res.json({ ok: false, error: 'unknown_target' });
+// --- OPEN (test senza token) => /open?target=...
+app.get('/open', async (req, res) => {
+  const target = (req.query.target || '').toString();
+  if (!TARGETS[target]) return res.status(404).json({ ok: false, error: 'unknown_target' });
 
-  try {
-    const out = await pulseRelay(TARGETS[target].id, 1);
-    res.json({ ok: out.status === 200, ...out });
-  } catch (e) {
-    res.json({ ok: false, error: String(e) });
-  }
+  const r = await openTarget(target);
+  if (!r.ok) return res.status(400).json({ ok: false, error: r.error, details: r.details || r.msg });
+  res.json({ ok: true, target, data: r.result || null });
 });
 
-// apertura con token giornaliero
+// --- OPEN con token giornaliero => /open/:target/:date/:sig
 app.get('/open/:target/:date/:sig', async (req, res) => {
   const { target, date, sig } = req.params;
-  if (!TARGETS[target]) return res.json({ ok: false, error: 'unknown_target' });
 
-  const today = new Date().toISOString().slice(0,10);
-  if (date !== today) return res.json({ ok: false, error: 'expired_or_wrong_date' });
-  const expected = makeSig(target, date);
-  if (sig !== expected) return res.json({ ok: false, error: 'bad_signature' });
+  if (!TARGETS[target]) return res.status(404).json({ ok: false, error: 'unknown_target' });
+  if (!verifyToken(target, date, sig)) return res.status(401).json({ ok: false, error: 'invalid_or_expired_token' });
 
-  try {
-    const out = await pulseRelay(TARGETS[target].id, 1);
-    res.json({ ok: out.status === 200, ...out });
-  } catch (e) {
-    res.json({ ok: false, error: String(e) });
-  }
+  const r = await openTarget(target);
+  if (!r.ok) return res.status(400).json({ ok: false, error: r.error, details: r.details || r.msg });
+  res.json({ ok: true, target, data: r.result || null });
 });
 
+// --- avvio server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('Server listening on', PORT));
+app.listen(PORT, () => {
+  console.log(`Shelly unified opener listening on ${PORT}`);
+});

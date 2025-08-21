@@ -1,148 +1,141 @@
-// server.js
-const express = require('express');
-const axios = require('axios');
-const crypto = require('crypto');
+const express = require("express");
+const axios = require("axios");
+const qs = require("qs");
+const crypto = require("crypto");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// === ENV ===
-const SHELLY_API_KEY = process.env.SHELLY_API_KEY;
-const SHELLY_BASE_URL = process.env.SHELLY_BASE_URL || 'https://shelly-77-eu.shelly.cloud';
-const TOKEN_SECRET   = process.env.TOKEN_SECRET || 'change-me';
+// === VARIABILI D’AMBIENTE RICHIESTE ===
+// SHELLY_API_KEY   (la tua chiave Cloud, unica, quella vecchia)
+// SHELLY_BASE_URL  => https://shelly-api-eu.shelly.cloud/device/relay/control
+// TOKEN_SECRET     => una stringa a caso per firmare i token (es. generata da Render)
 
-// === MAPPATURA DEVICE ===
-const targets = {
-  // Leonina
-  'leonina-door':              { id: '3494547a9395', name: 'Leonina — Apartment Door' },
-  'leonina-building-door':     { id: '34945479fbbe', name: 'Leonina — Building Door' },
-
-  // Scala
-  'scala-door':                { id: '3494547a1075', name: 'Scala — Apartment Door' },
-  'scala-building-door':       { id: '3494547745ee', name: 'Scala — Building Door' },
-
-  // Ottavia
-  'ottavia-door':              { id: '3494547a887d', name: 'Ottavia — Apartment Door' },
-  'ottavia-building-door':     { id: '3494547ab62b', name: 'Ottavia — Building Door' },
-
-  // Viale Trastevere
-  'viale-trastevere-door':     { id: '34945479fa35', name: 'Viale Trastevere — Apartment Door' },
-  'viale-trastevere-building-door': { id: '34945479fd73', name: 'Viale Trastevere — Building Door' },
-
-  // Arenula
-  'arenula-building-door':     { id: '3494547ab05e', name: 'Arenula — Building Door' },
-};
-
-// --- helpers ---
 function todayYMD() {
-  const d = new Date(); // UTC va bene: la firma dipende solo da AAAA-MM-GG
+  const d = new Date();
   const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(d.getUTCDate()).padStart(2, '0');
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
 
-function sign(targetKey, ymd) {
-  const h = crypto.createHmac('sha256', TOKEN_SECRET);
-  h.update(`${targetKey}|${ymd}`);
-  return h.digest('base64url');
+function sign(target, date) {
+  return crypto
+    .createHmac("sha256", process.env.TOKEN_SECRET || "changeme")
+    .update(`${target}:${date}`)
+    .digest("base64url");
 }
 
-async function shellyOpen(deviceId) {
-  // Shelly Cloud accetta la chiave come "auth_key" nel body JSON
-  // e il relay su canale 0 (come il tuo primo device che funzionava)
-  const url = `${SHELLY_BASE_URL}/device/relay/control`;
-  const payload = {
-    id: deviceId,
-    auth_key: SHELLY_API_KEY,
-    channel: 0,
-    turn: 'on'
-  };
-  const { data } = await axios.post(url, payload, { timeout: 15000 });
-  return data;
+function validateToken(target, date, sig) {
+  if (!date || !sig) return false;
+  // valido solo per il giorno indicato (scade a mezzanotte UTC)
+  const expected = sign(target, date);
+  return sig === expected && date === todayYMD();
 }
 
-// --- ROUTES ---
+// === Mappa dei dispositivi (ID forniti da te) ===
+const TARGETS = {
+  "leonina-door":              { name: "Leonina — Apartment Door",  id: "3494547a9395" },
+  "leonina-building-door":     { name: "Leonina — Building Door",   id: "34945479fbbe" },
+  "scala-door":                { name: "Scala — Apartment Door",    id: "3494547a1075" },
+  "scala-building-door":       { name: "Scala — Building Door",     id: "3494547745ee" },
+  "ottavia-door":              { name: "Ottavia — Apartment Door",  id: "3494547a887d" },
+  "ottavia-building-door":     { name: "Ottavia — Building Door",   id: "3494547ab62b" },
+  "viale-trastevere-door":     { name: "Viale Trastevere — Apartment Door", id: "34945479fa35" },
+  "viale-trastevere-building-door": { name: "Viale Trastevere — Building Door", id: "34945479fd73" },
+  "arenula-building-door":     { name: "Arenula — Building Door",   id: "3494547ab05e" },
+};
 
-// Paginetta di indice con link utili
-app.get('/', (req, res) => {
-  const rows = Object.entries(targets).map(([key, t]) => {
-    const gen = `/gen/${key}`;               // genera link token per OGGI
-    const open = `/open?target=${key}`;      // prova immediata (senza token)
-    const test = `/test-open/${key}`;        // test tokenizzato (genera e apre)
-    return `• <b>${key}</b> — ${t.name} &nbsp; <a href="${gen}">gen token</a> &nbsp; <a href="${open}">test open</a> &nbsp; <a href="${test}">test open (token)</a>`;
-  }).join('<br/>');
-
-  res.send(`<h3>Shelly unified opener</h3>
-  <p>${Object.keys(targets).length} targets configured.</p>
-  ${rows}
-  <p><br/><a href="/health">/health</a></p>`);
+// pagina indice comoda
+app.get("/", (req, res) => {
+  const base = `${req.protocol}://${req.get("host")}`;
+  const rows = Object.entries(TARGETS).map(([slug, t]) => {
+    const gen = `${base}/gen/${slug}`;
+    const testOpen = `${base}/open/${slug}`;                // senza token
+    const tokenOpen = `${base}/open/${slug}/${todayYMD()}/${sign(slug, todayYMD())}`; // con token odierno
+    return `• <b>${slug}</b> — ${t.name} &nbsp;
+      <a href="${gen}">gen token</a> &nbsp;
+      <a href="${testOpen}">test open</a> &nbsp;
+      <a href="${tokenOpen}">test open (token)</a>`;
+  });
+  res
+    .status(200)
+    .send(`<h3>Shelly unified opener</h3><p>${rows.join("<br>")}</p><p><a href="/health">/health</a></p>`);
 });
 
-// Health check
-app.get('/health', (req, res) => {
+// salute / diagnostica
+app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    hasApiKey: Boolean(SHELLY_API_KEY),
-    hasBaseUrl: Boolean(SHELLY_BASE_URL),
-    baseUrl: SHELLY_BASE_URL
+    hasApiKey: !!process.env.SHELLY_API_KEY,
+    hasBase: !!process.env.SHELLY_BASE_URL,
+    cloudBase: process.env.SHELLY_BASE_URL || null,
   });
 });
 
-// Genera un link token per OGGI (valido fino a mezzanotte UTC)
-app.get('/gen/:target', (req, res) => {
-  const key = req.params.target;
-  if (!targets[key]) return res.status(404).json({ ok: false, error: 'unknown target' });
-
-  const ymd = todayYMD();
-  const sig = sign(key, ymd);
-  const url = `${req.protocol}://${req.get('host')}/t/${encodeURIComponent(key)}/${ymd}/${sig}`;
-  res.json({ ok: true, target: key, date: ymd, sig, url });
+// genera link con token valido per OGGI (24h, scade a mezzanotte UTC)
+app.get("/gen/:target", (req, res) => {
+  const { target } = req.params;
+  if (!TARGETS[target]) return res.status(404).json({ ok: false, error: "Unknown target" });
+  const date = todayYMD();
+  const sig = sign(target, date);
+  const url = `${req.protocol}://${req.get("host")}/open/${target}/${date}/${sig}`;
+  res.json({ ok: true, target, date, sig, url });
 });
 
-// Link tokenizzato (controlla firma e data)
-app.get('/t/:target/:ymd/:sig', async (req, res) => {
+// apre SENZA token (uso amministrativo)
+app.get("/open/:target", async (req, res) => {
+  const { target } = req.params;
+  if (!TARGETS[target]) return res.status(404).json({ ok: false, error: "Unknown target" });
   try {
-    const { target, ymd, sig } = req.params;
-    if (!targets[target]) return res.status(404).send('Unknown target');
-
-    // scadenza: valido SOLO per la data di oggi (UTC)
-    const today = todayYMD();
-    if (ymd !== today) return res.status(401).send('Token expired');
-
-    const expected = sign(target, ymd);
-    if (sig !== expected) return res.status(401).send('Bad signature');
-
-    const data = await shellyOpen(targets[target].id);
+    const data = await openShelly(TARGETS[target].id);
     res.json({ ok: true, data });
-  } catch (err) {
-    const msg = err.response?.data || err.message || String(err);
-    res.status(500).send(typeof msg === 'string' ? msg : JSON.stringify(msg));
+  } catch (e) {
+    res.status(502).json({ ok: false, error: toErr(e) });
   }
 });
 
-// Prova “open” diretta (senza token) per debug
-app.get('/open', async (req, res) => {
+// apre CON token (per ospiti)
+app.get("/open/:target/:date/:sig", async (req, res) => {
+  const { target, date, sig } = req.params;
+  if (!TARGETS[target]) return res.status(404).json({ ok: false, error: "Unknown target" });
+  if (!validateToken(target, date, sig)) {
+    return res.status(401).send("ERROR 401 (token invalid or expired)");
+  }
   try {
-    const key = req.query.target;
-    if (!key || !targets[key]) return res.status(400).json({ ok: false, error: 'missing or unknown target' });
-    const data = await shellyOpen(targets[key].id);
+    const data = await openShelly(TARGETS[target].id);
     res.json({ ok: true, data });
-  } catch (err) {
-    const msg = err.response?.data || err.message || String(err);
-    res.status(500).send(typeof msg === 'string' ? msg : JSON.stringify(msg));
+  } catch (e) {
+    res.status(502).json({ ok: false, error: toErr(e) });
   }
 });
 
-// Genera e apre subito col token (utile per provare da PC)
-app.get('/test-open/:target', (req, res) => {
-  const key = req.params.target;
-  if (!targets[key]) return res.status(404).json({ ok: false, error: 'unknown target' });
-  const ymd = todayYMD();
-  const sig = sign(key, ymd);
-  res.redirect(`/t/${encodeURIComponent(key)}/${ymd}/${sig}`);
-});
+// --- chiamata al Cloud Shelly: form-urlencoded, con auth_key come PARAMETRO ---
+async function openShelly(deviceId) {
+  const url = process.env.SHELLY_BASE_URL; // es.: https://shelly-api-eu.shelly.cloud/device/relay/control
+  if (!url) throw new Error("Missing SHELLY_BASE_URL");
+  if (!process.env.SHELLY_API_KEY) throw new Error("Missing SHELLY_API_KEY");
+
+  const payload = qs.stringify({
+    auth_key: process.env.SHELLY_API_KEY,
+    id: deviceId,
+    channel: 0,          // Shelly 1 -> canale 0
+    turn: "on",          // impulso
+  });
+
+  const resp = await axios.post(url, payload, {
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    timeout: 10000,
+  });
+  return resp.data;
+}
+
+function toErr(e) {
+  if (e.response && e.response.data) return e.response.data;
+  if (e.message) return e.message;
+  return String(e);
+}
 
 app.listen(PORT, () => {
-  console.log(`OK on ${PORT}`);
+  console.log(`Server running on :${PORT}`);
 });

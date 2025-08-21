@@ -1,13 +1,11 @@
 {
   "name": "shelly-cloud-opener",
   "version": "1.0.0",
-  "description": "Server per aprire la porta tramite Shelly Cloud",
+  "type": "commonjs",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
+  "scripts": { "start": "node server.js" },
   "dependencies": {
-    "express": "^4.18.2",
-    "node-fetch": "^2.6.7"
+    "express": "^4.19.2",
+    "node-fetch": "^2.6.9"
   }
 }
